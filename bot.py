@@ -1,5 +1,5 @@
 # ============================================
-# bot.py - بوت سحب المقاطع من قناة محددة
+# bot.py - بوت سحب المقاطع من قناة محددة مع قائمة البوتات
 # ============================================
 
 import logging
@@ -24,7 +24,10 @@ TOTAL_VIDEOS = 900  # إجمالي عدد المقاطع
 FIRST_VIDEO_ID = 2  # أول مقطع
 
 # ===== قنوات الاشتراك الإجباري =====
-required_channels = []  # المطور يضيفها
+required_channels = []
+
+# ===== قائمة البوتات =====
+bots_list = []  # كل بوت: {"name": "اسم البوت", "link": "رابط البوت"}
 
 # ===== بيانات المستخدمين =====
 user_data = {}
@@ -34,7 +37,7 @@ user_positions = {}
 
 # ===== تحميل البيانات =====
 def load_data():
-    global user_data, user_activity, command_usage, required_channels
+    global user_data, user_activity, command_usage, required_channels, bots_list
     try:
         with open('user_data.json', 'r', encoding='utf-8') as f:
             user_data = json.load(f)
@@ -58,6 +61,12 @@ def load_data():
             required_channels = json.load(f)
     except:
         required_channels = []
+    
+    try:
+        with open('bots_list.json', 'r', encoding='utf-8') as f:
+            bots_list = json.load(f)
+    except:
+        bots_list = []
 
 def save_data():
     with open('user_data.json', 'w', encoding='utf-8') as f:
@@ -68,6 +77,8 @@ def save_data():
         json.dump(command_usage, f, ensure_ascii=False, indent=2)
     with open('required_channels.json', 'w', encoding='utf-8') as f:
         json.dump(required_channels, f, ensure_ascii=False, indent=2)
+    with open('bots_list.json', 'w', encoding='utf-8') as f:
+        json.dump(bots_list, f, ensure_ascii=False, indent=2)
 
 load_data()
 
@@ -139,8 +150,8 @@ async def send_videos(context, chat_id, num1, num2):
         logger.error(f"خطأ في جلب المقطع: {e}")
         return False
 
-def get_keyboard(current):
-    """أزرار التنقل بين المقاطع"""
+def get_keyboard_with_admin(current, user_id):
+    """أزرار التنقل مع زر التحكم للمطور"""
     row = []
     if current > 1:
         row.append(InlineKeyboardButton("⬅️ السابق", callback_data="prev"))
@@ -150,24 +161,155 @@ def get_keyboard(current):
     
     keyboard = [row]
     
-    # زر الرئيسية للمستخدم العادي
+    # زر الرئيسية
     main_buttons = [InlineKeyboardButton("🏠 الرئيسية", callback_data="home")]
     
     # زر لوحة التحكم للمطور
-    if is_admin(update_context_user_id()):
+    if is_admin(user_id):
         main_buttons.append(InlineKeyboardButton("⚙️ التحكم", callback_data="admin_panel"))
     
     keyboard.append(main_buttons)
     return InlineKeyboardMarkup(keyboard)
 
-def update_context_user_id():
-    """دالة مساعدة للحصول على user_id في context"""
-    return None
+# ===== دوال إدارة البوتات =====
+async def manage_bots(update, context):
+    """إدارة قائمة البوتات"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = []
+    for i, bot in enumerate(bots_list):
+        keyboard.append([
+            InlineKeyboardButton(f"🗑️ {bot['name']}", callback_data=f"remove_bot_{i}")
+        ])
+    
+    keyboard.append([InlineKeyboardButton("➕ إضافة بوت", callback_data="add_bot")])
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel")])
+    
+    text = "🤖 **إدارة قائمة البوتات**\n\n"
+    if bots_list:
+        text += "البوتات الحالية:\n"
+        for i, bot in enumerate(bots_list, 1):
+            text += f"{i}. **{bot['name']}**\n"
+            text += f"   🔗 {bot['link']}\n\n"
+    else:
+        text += "❌ لا توجد بوتات حالياً\n\n"
+    text += "يمكنك إضافة بوت جديد أو حذف بوت موجود."
+    
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def add_bot(update, context):
+    """بدء إضافة بوت جديد"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['waiting_for'] = 'add_bot_name'
+    
+    await query.message.edit_text(
+        "🤖 **إضافة بوت جديد**\n\n"
+        "الخطوة 1/2:\n"
+        "أرسل **اسم البوت** (مثال: بوت التحميل)\n"
+        "أو /cancel للإلغاء"
+    )
+
+async def handle_add_bot_name(update, context):
+    """معالجة اسم البوت"""
+    user_id = update.message.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    bot_name = update.message.text.strip()
+    context.user_data['temp_bot_name'] = bot_name
+    context.user_data['waiting_for'] = 'add_bot_link'
+    
+    await update.message.reply_text(
+        f"✅ تم حفظ الاسم: **{bot_name}**\n\n"
+        "الخطوة 2/2:\n"
+        "أرسل **رابط البوت** (مثال: https://t.me/bot_name)\n"
+        "أو /cancel للإلغاء"
+    )
+
+async def handle_add_bot_link(update, context):
+    """معالجة رابط البوت"""
+    user_id = update.message.from_user.id
+    if not is_admin(user_id):
+        return
+    
+    bot_link = update.message.text.strip()
+    bot_name = context.user_data.get('temp_bot_name', 'بوت بدون اسم')
+    
+    # التحقق من الرابط
+    if not bot_link.startswith(('https://t.me/', 'http://t.me/', 't.me/')):
+        await update.message.reply_text(
+            "❌ رابط غير صحيح!\n"
+            "يجب أن يبدأ بـ: https://t.me/ أو t.me/\n"
+            "أرسل الرابط مرة أخرى أو /cancel للإلغاء"
+        )
+        return
+    
+    # إضافة البوت
+    bots_list.append({
+        "name": bot_name,
+        "link": bot_link
+    })
+    save_data()
+    
+    await update.message.reply_text(
+        f"✅ تم إضافة البوت بنجاح!\n\n"
+        f"📌 **الاسم:** {bot_name}\n"
+        f"🔗 **الرابط:** {bot_link}"
+    )
+    
+    context.user_data['waiting_for'] = None
+    context.user_data['temp_bot_name'] = None
+    
+    # عرض لوحة التحكم
+    await show_admin_panel(update, context, user_id)
+
+async def remove_bot(update, context):
+    """حذف بوت من القائمة"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not is_admin(query.from_user.id):
+        await query.message.reply_text("⛔ غير مصرح.")
+        return
+    
+    index = int(query.data.split('_')[2])
+    removed = bots_list.pop(index)
+    save_data()
+    
+    await query.message.reply_text(f"✅ تم حذف البوت: **{removed['name']}**")
+    await manage_bots(update, context)
+
+# ===== عرض قائمة البوتات للمستخدمين =====
+async def show_bots_list(update, context):
+    """عرض قائمة البوتات للمستخدم"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not bots_list:
+        await query.message.reply_text("❌ لا توجد بوتات متاحة حالياً.")
+        return
+    
+    keyboard = []
+    for bot in bots_list:
+        keyboard.append([
+            InlineKeyboardButton(f"🤖 {bot['name']}", url=bot['link'])
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="home")])
+    
+    text = "🤖 **قائمة البوتات المتاحة**\n\n"
+    text += "اضغط على اسم البوت لفتحه:\n\n"
+    
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ===== دوال الإعدادات للمطور =====
 async def show_admin_panel(update, context, user_id):
     """عرض لوحة تحكم المطور"""
     keyboard = [
+        [InlineKeyboardButton("🤖 إدارة البوتات", callback_data="admin_bots")],
         [InlineKeyboardButton("📢 إدارة قنوات الاشتراك", callback_data="admin_required_channels")],
         [InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats")],
         [InlineKeyboardButton("👥 المستخدمين", callback_data="admin_users")],
@@ -177,6 +319,7 @@ async def show_admin_panel(update, context, user_id):
     
     text = f"⚙️ **لوحة تحكم المطور**\n\n"
     text += f"📹 قناة المقاطع: {VIDEO_CHANNEL}\n"
+    text += f"🤖 عدد البوتات: {len(bots_list)}\n"
     text += f"📢 عدد قنوات الاشتراك: {len(required_channels)}\n"
     text += f"👥 إجمالي المستخدمين: {len(user_data)}"
     
@@ -309,6 +452,7 @@ async def admin_export(update, context):
         'activity': user_activity,
         'commands': command_usage,
         'required_channels': required_channels,
+        'bots_list': bots_list,
         'video_channel': VIDEO_CHANNEL,
         'export_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         'total_users': len(user_data)
@@ -363,62 +507,19 @@ async def start(update, context):
         [InlineKeyboardButton("🎬 عرض المقاطع", callback_data="next")],
     ]
     
+    # إذا فيه بوتات، نضيف زر قائمة البوتات
+    if bots_list:
+        keyboard.append([InlineKeyboardButton("🤖 قائمة البوتات", callback_data="show_bots")])
+    
     if is_admin(user_id):
         keyboard.append([InlineKeyboardButton("⚙️ لوحة التحكم", callback_data="admin_panel")])
     
     await update.message.reply_text(
         "🎉 **أهلاً وسهلاً!**\n\n"
         "✅ شكراً لاشتراكك!\n\n"
-        "اضغط 'عرض المقاطع' لتبدأ! 🎬",
+        "اختر أحد الخيارات أدناه:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
-async def show_videos_start(update, context):
-    """بدء عرض المقاطع"""
-    query = update.callback_query
-    user_id = query.from_user.id
-    await query.answer()
-    
-    # تعيين الموضع الابتدائي
-    user_positions[user_id] = 1
-    
-    current = 1
-    success = await send_videos(context, query.message.chat.id, current, current + 1)
-    
-    if not success:
-        await query.message.reply_text("❌ خطأ في جلب المقاطع.")
-        return
-    
-    user_positions[user_id] = current + 2
-    
-    # بناء الأزرار مع زر التحكم للمطور
-    keyboard = get_keyboard_with_admin(current, user_id)
-    
-    await query.message.reply_text(
-        f"🎬 **المقطع {current} و {current+1}**",
-        reply_markup=keyboard
-    )
-
-def get_keyboard_with_admin(current, user_id):
-    """أزرار التنقل مع زر التحكم للمطور"""
-    row = []
-    if current > 1:
-        row.append(InlineKeyboardButton("⬅️ السابق", callback_data="prev"))
-    row.append(InlineKeyboardButton(f"📌 {current}-{current+1}", callback_data="none"))
-    if current + 2 <= TOTAL_VIDEOS:
-        row.append(InlineKeyboardButton("التالي ➡️", callback_data="next"))
-    
-    keyboard = [row]
-    
-    # زر الرئيسية
-    main_buttons = [InlineKeyboardButton("🏠 الرئيسية", callback_data="home")]
-    
-    # زر لوحة التحكم للمطور
-    if is_admin(user_id):
-        main_buttons.append(InlineKeyboardButton("⚙️ التحكم", callback_data="admin_panel"))
-    
-    keyboard.append(main_buttons)
-    return InlineKeyboardMarkup(keyboard)
 
 # ===== معالج الأزرار الرئيسي =====
 async def buttons(update, context):
@@ -447,13 +548,15 @@ async def buttons(update, context):
             keyboard = [
                 [InlineKeyboardButton("🎬 عرض المقاطع", callback_data="next")],
             ]
+            if bots_list:
+                keyboard.append([InlineKeyboardButton("🤖 قائمة البوتات", callback_data="show_bots")])
             if is_admin(user_id):
                 keyboard.append([InlineKeyboardButton("⚙️ لوحة التحكم", callback_data="admin_panel")])
             
             await query.message.edit_text(
                 "✅ **تم التحقق!**\n\n"
                 "أنت مشترك بجميع القنوات! 🎉\n\n"
-                "اضغط 'عرض المقاطع' للبدء.",
+                "اختر أحد الخيارات أدناه.",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         else:
@@ -461,6 +564,9 @@ async def buttons(update, context):
                 "❌ لم تشترك بجميع القنوات بعد!",
                 reply_markup=get_channels_keyboard()
             )
+    
+    elif query.data == "show_bots":
+        await show_bots_list(update, context)
     
     elif query.data == "next":
         current = user_positions.get(user_id, 1)
@@ -500,6 +606,8 @@ async def buttons(update, context):
         keyboard = [
             [InlineKeyboardButton("🎬 عرض المقاطع", callback_data="next")],
         ]
+        if bots_list:
+            keyboard.append([InlineKeyboardButton("🤖 قائمة البوتات", callback_data="show_bots")])
         if is_admin(user_id):
             keyboard.append([InlineKeyboardButton("⚙️ لوحة التحكم", callback_data="admin_panel")])
         
@@ -513,6 +621,12 @@ async def buttons(update, context):
             await query.message.reply_text("⛔ هذا الخيار خاص بالمطور فقط.")
             return
         await show_admin_panel(update, context, user_id)
+    
+    elif query.data == "admin_bots":
+        if not is_admin(user_id):
+            await query.message.reply_text("⛔ غير مصرح.")
+            return
+        await manage_bots(update, context)
     
     elif query.data == "admin_required_channels":
         if not is_admin(user_id):
@@ -538,6 +652,18 @@ async def buttons(update, context):
             return
         await admin_export(update, context)
     
+    elif query.data == "add_bot":
+        if not is_admin(user_id):
+            await query.message.reply_text("⛔ غير مصرح.")
+            return
+        await add_bot(update, context)
+    
+    elif query.data.startswith("remove_bot_"):
+        if not is_admin(user_id):
+            await query.message.reply_text("⛔ غير مصرح.")
+            return
+        await remove_bot(update, context)
+    
     elif query.data.startswith("remove_required_"):
         if not is_admin(user_id):
             await query.message.reply_text("⛔ غير مصرح.")
@@ -558,13 +684,18 @@ async def handle_text(update, context):
     user_id = update.message.from_user.id
     waiting_for = context.user_data.get('waiting_for')
     
-    if waiting_for == 'add_required_channel':
+    if waiting_for == 'add_bot_name':
+        await handle_add_bot_name(update, context)
+    elif waiting_for == 'add_bot_link':
+        await handle_add_bot_link(update, context)
+    elif waiting_for == 'add_required_channel':
         await handle_add_required_channel(update, context)
     else:
         await update.message.reply_text("❌ غير معروف. استخدم /start للبدء")
 
 async def cancel(update, context):
     context.user_data['waiting_for'] = None
+    context.user_data['temp_bot_name'] = None
     await update.message.reply_text("✅ تم الإلغاء")
 
 # ===== تشغيل البوت =====
@@ -578,6 +709,7 @@ def main():
         print("🚀 البوت شغال...")
         print(f"📹 قناة المقاطع: {VIDEO_CHANNEL}")
         print(f"👥 إجمالي المقاطع: {TOTAL_VIDEOS}")
+        print(f"🤖 عدد البوتات المسجلة: {len(bots_list)}")
         application.run_polling()
     except Exception as e:
         logger.error(f"خطأ في تشغيل البوت: {e}")
